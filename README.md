@@ -7,6 +7,8 @@ Manual CCTV monitoring is inefficient, error-prone, and cannot scale to modern s
 Build a web-based AI CCTV monitoring system that connects to RTSP camera streams or video files and allows users to define security events (e.g., fights, loitering, trespassing) using natural-language descriptions. The system analyzes live video in near real time by processing short video segments with vision–language models (such as Gemini, Llama, OpenAI Vision, Claude, or ChatGPT) without any model retraining. It provides a dashboard for live video viewing, detected events, and event logs, sends real-time alerts when events occur, and stores event metadata and video clips for later review. The architecture is modular, scalable, and works with existing CCTV infrastructure.
 
 ## 🏗️ Simple Architecture Diagram
+🎥 Demo / Walkthrough Video:
+https://youtu.be/-s9XeL6KFlc?si=BC0jZWuGPYnKNxqm
 ```mermaid
 flowchart LR
   subgraph Core stages
