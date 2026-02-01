@@ -9,33 +9,33 @@ https://youtu.be/-s9XeL6KFlc?si=BC0jZWuGPYnKNxqm
 
 WatchTower AI is a web-based, intelligent CCTV monitoring system designed to automate security surveillance using modern vision–language AI models. It transforms traditional camera feeds into an active monitoring solution by understanding video content in context, detecting complex security events in near real time, and alerting users instantly—without requiring any custom model training or changes to existing CCTV infrastructure.
 
-Key capabilities of the solution include:
+# Key capabilities of the solution include:
 
-Connects to live CCTV feeds or video files
+- **Connects to live CCTV feeds or video files**
 Works seamlessly with RTSP camera streams as well as pre-recorded video inputs—no hardware changes required.
 
-Define security events using natural language
+-**Define security events using natural language**
 Users can describe events like “detect fights,” “identify loitering,” or “flag trespassing” in plain English—no coding or AI expertise needed.
 
-Near real-time video analysis
+-**Near real-time video analysis**
 Live video is divided into short segments and analyzed continuously to ensure fast and responsive event detection.
 
-Powered by vision–language AI models
+-**Powered by vision–language AI models**
 Utilizes advanced models such as Gemini, Llama, OpenAI Vision, Claude, and ChatGPT to understand both visual scenes and textual event descriptions.
 
-No model retraining required
+-**No model retraining required**
 New detection rules can be added or modified instantly through prompts, making the system highly flexible and adaptable.
 
-Live monitoring dashboard
+-**Live monitoring dashboard**
 Provides a centralized interface to view camera feeds, detected events, and detailed event logs in real time.
 
-Instant alerts on critical events
+-**Instant alerts on critical events**
 Sends real-time notifications when a defined security event occurs, enabling quicker response and intervention.
 
-Event logging & video evidence storage
+-**Event logging & video evidence storage**
 Automatically stores event metadata and related video clips for audits, investigations, and future analysis.
 
-Modular and scalable architecture
+-**Modular and scalable architecture**
 Built to scale across multiple cameras and locations while integrating smoothly with existing CCTV systems.
 
 ## 🏗️ Simple Architecture Diagram
