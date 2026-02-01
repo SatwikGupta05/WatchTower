@@ -132,34 +132,7 @@ WatchTower AI is an advanced, AI-powered CCTV monitoring system designed to auto
 
 - **Backend:** Python (FastAPI), Gemini / Llama / OpenAI Vision
 - **Frontend:** Next.js (React)
-
-## 🏗️ System Architecture
-
-The system processes video streams by chunking them, analyzing chunks for defined events using advanced vision models, and storing detected events in a database for real-time alerting and later review.
-
-```mermaid
-flowchart LR
-  subgraph Core stages
-    RTSP["RTSP Stream"]
-    Chunker["Video Stream Chunker (saves N-second files)"]
-    Detector["Video Event Detector (AI Vision)"]
-    DBWriter["Database Writer"]
-  end
-  subgraph Supporting resources
-    FS[(Filesystem)]
-    ChunkQueue["Chunk Queue (file paths)"]
-    EventQueue["Event Queue (event JSON)"]
-    DB[(Database)]
-  end
-  RTSP --> Chunker
-  Chunker --> FS
-  Chunker --> ChunkQueue
-  ChunkQueue --> Detector
-  Detector --> EventQueue
-  EventQueue --> DBWriter
-  DBWriter --> DB
-```
-
+  
 ---
 
 For more details, see the backend and frontend README files, or contact the project maintainers.
