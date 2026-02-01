@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from video_event_detector import VideoEventDetector
 from video_stream_chunker import VideoStreamChunker
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 app = FastAPI(title="Video Event Detection API")
+# Serve sample_videos as static files (must be after app is defined)
+app.mount("/sample_videos", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "sample_videos")), name="sample_videos")
 
 # Add CORS middleware
 app.add_middleware(

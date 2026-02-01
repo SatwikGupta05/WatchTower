@@ -1028,17 +1028,31 @@ export default function Home() {
                       ></iframe>
                     ) : (
                       <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500">
-                        <Film size={64} className="mb-4 opacity-50" />
-                        <p className="text-lg font-medium">
-                          {state.sourceType === "webcam" ? "Webcam Active" : 
-                           state.sourceType === "file" ? "Video File Mode" : 
-                           "No Preview Available"}
-                        </p>
-                        <p className="text-sm mt-2 text-gray-600">
-                          {state.sourceType === "webcam" ? "Camera feed is being processed" :
-                           state.sourceType === "file" ? `Playing: ${state.rtspUrl}` :
-                           "Preview not available for this source"}
-                        </p>
+                        {state.sourceType === "file" ? (
+                          <>
+                            <video
+                              width="640"
+                              height="360"
+                              controls
+                              src={`http://localhost:8000/sample_videos/${state.rtspUrl.split('/').pop()}`}
+                              style={{ background: '#222', borderRadius: '12px' }}
+                            >
+                              Your browser does not support the video tag.
+                            </video>
+                            <p className="text-lg font-medium mt-4">Video File Mode</p>
+                            <p className="text-sm mt-2 text-gray-600">Playing: {state.rtspUrl}</p>
+                          </>
+                        ) : (
+                          <>
+                            <Film size={64} className="mb-4 opacity-50" />
+                            <p className="text-lg font-medium">
+                              {state.sourceType === "webcam" ? "Webcam Active" : "No Preview Available"}
+                            </p>
+                            <p className="text-sm mt-2 text-gray-600">
+                              {state.sourceType === "webcam" ? "Camera feed is being processed" : "Preview not available for this source"}
+                            </p>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
