@@ -169,7 +169,15 @@ class DBWriter:
                 return [
                     {
                         "event_id": e.event_id,
-                        "event_timestamp": e.event_timestamp.isoformat() if e.event_timestamp else None,
+                        "event_timestamp": (
+                            # Ensure timezone info is included so the browser displays
+                            # the correct local time. Timestamps are stored in UTC.
+                            e.event_timestamp.isoformat()
+                            if e.event_timestamp and e.event_timestamp.tzinfo is not None
+                            else (e.event_timestamp.isoformat() + "+00:00")
+                            if e.event_timestamp
+                            else None
+                        ),
                         "event_code": e.event_code,
                         "event_description": e.event_description,
                         "event_video_url": e.event_video_url,

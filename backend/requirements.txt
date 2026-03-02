@@ -1,6 +1,7 @@
 devtools
 fastapi
 google-generativeai
+httpx
 openai
 opencv-python
 pillow

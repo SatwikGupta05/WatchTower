@@ -5,8 +5,8 @@ import shutil
 import signal
 import threading
 import time
-from datetime import datetime
-from typing import Any, Dict, List
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 import uvicorn
 from db_writer import DBWriter, EventAlert
@@ -28,7 +28,11 @@ load_dotenv()
 
 app = FastAPI(title="Video Event Detection API")
 # Serve sample_videos as static files (must be after app is defined)
-app.mount("/sample_videos", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "sample_videos")), name="sample_videos")
+app.mount(
+    "/sample_videos",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "sample_videos")),
+    name="sample_videos",
+)
 
 # Add CORS middleware
 app.add_middleware(
@@ -46,6 +50,7 @@ db_writer: DBWriter | None = None
 shutdown_event = threading.Event()
 service_active = False
 threads = []
+active_chunker: Optional[Any] = None
 
 
 # Define Pydantic models for request validation
@@ -82,28 +87,46 @@ def validate_config(config: Dict[str, Any]) -> None:
         raise ValueError(
             f"Config is missing one or more required keys: {required_keys}"
         )
-    
+
     # Validate provider
-    valid_providers = ["llama", "openai", "gemini", "grok"]
+    valid_providers = ["llama", "openai", "gemini", "grok", "ollama", "lmstudio"]
     if config.get("provider", "").lower() not in valid_providers:
         raise ValueError(
             f"Invalid provider: {config.get('provider')}. Must be one of {valid_providers}"
         )
+    
+    # Validate provider-specific requirements
+    provider = config.get("provider", "").lower()
+    local_providers = ["ollama", "lmstudio"]
+    
+    if provider not in local_providers:
+        # Non-local providers require API key
+        if not config.get("base_url"):
+            raise ValueError(f"base_url is required for {provider} provider")
+    else:
+        # Local providers require base_url
+        if not config.get("base_url"):
+            raise ValueError(f"base_url is required for {provider} provider")
 
 
 def video_processing_worker(config: Dict[str, Any], stop_event: threading.Event):
     logger.info("Video processing worker started.")
-    
+
     # Get API key based on provider
     provider = config.get("provider", "llama").lower()
-    api_key_env_map = {
-        "llama": "LLAMA_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-        "grok": "GROK_API_KEY",
-    }
-    api_key = os.getenv(api_key_env_map.get(provider, "LLAMA_API_KEY"), "")
-    
+    local_providers = ["ollama", "lmstudio"]
+
+    if provider in local_providers:
+        api_key = ""  # Local providers don't need API key
+    else:
+        api_key_env_map = {
+            "llama": "LLAMA_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "gemini": "GEMINI_API_KEY",
+            "grok": "GROK_API_KEY",
+        }
+        api_key = os.getenv(api_key_env_map.get(provider, "LLAMA_API_KEY"), "")
+
     try:
         detector = VideoEventDetector(
             model=config["model"],
@@ -159,7 +182,7 @@ def event_collection_worker(stop_event: threading.Event):
 
             try:
                 event_alert = EventAlert(
-                    event_timestamp=result.get("event_timestamp", datetime.now()),
+                    event_timestamp=result.get("event_timestamp", datetime.now(timezone.utc)),
                     event_code=result.get("event_code", "unknown-code"),
                     event_description=result.get(
                         "event_description", "Unknown event description"
@@ -192,7 +215,7 @@ def event_collection_worker(stop_event: threading.Event):
 
 
 def start_services(config: Dict[str, Any]):
-    global db_writer, shutdown_event, service_active, threads
+    global db_writer, shutdown_event, service_active, threads, active_chunker
     logger.info("Starting services...")
 
     try:
@@ -223,7 +246,9 @@ def start_services(config: Dict[str, Any]):
             output_queue=video_chunk_queue,
             source_type=config.get("source_type", "auto"),
         )
-        logger.info(f"Video stream chunker initialized with source type: {config.get('source_type', 'auto')}")
+        logger.info(
+            f"Video stream chunker initialized with source type: {config.get('source_type', 'auto')}"
+        )
     except Exception as e:
         logger.error(f"Failed to initialize VideoStreamChunker: {e}. Shutting down.")
         raise HTTPException(
@@ -233,24 +258,28 @@ def start_services(config: Dict[str, Any]):
     video_proc_thread = threading.Thread(
         target=video_processing_worker,
         args=(config, shutdown_event),
-        daemon=True,
+        daemon=False,
         name="VideoProcessor",
     )
     event_collect_thread = threading.Thread(
         target=event_collection_worker,
         args=(shutdown_event,),
-        daemon=True,
+        daemon=False,
         name="EventCollector",
     )
     chunker_thread = threading.Thread(
-        target=chunker.start, daemon=True, name="StreamChunker"
+        target=chunker.start, daemon=False, name="StreamChunker"
     )
 
+    active_chunker = chunker
     threads = [video_proc_thread, event_collect_thread, chunker_thread]
 
     logger.info("Starting worker threads.")
     for t in threads:
         t.start()
+    
+    # Give threads time to start and log their initialization
+    time.sleep(0.5)
 
     service_active = True
     logger.info("All services started.")
@@ -258,7 +287,7 @@ def start_services(config: Dict[str, Any]):
 
 
 def stop_services():
-    global shutdown_event, service_active, threads
+    global shutdown_event, service_active, threads, active_chunker
 
     if not service_active:
         return {"status": "Service is not running"}
@@ -266,8 +295,10 @@ def stop_services():
     logger.info("Stopping services...")
     shutdown_event.set()
 
-    # Reset shutdown event for future use
-    shutdown_event = threading.Event()
+    # Stop the chunker so its thread exits
+    if active_chunker is not None:
+        active_chunker.stop()
+        active_chunker = None
 
     timeout_seconds = 10
     for t in threads:
@@ -290,7 +321,7 @@ async def start(config: AppConfig, background_tasks: BackgroundTasks):
         return {"status": "Service is already running"}
 
     # Convert Pydantic model to dict
-    config_dict = config.dict()
+    config_dict = config.model_dump()
 
     try:
         start_services(config_dict)
@@ -304,7 +335,11 @@ async def start(config: AppConfig, background_tasks: BackgroundTasks):
 
 @app.post("/stop")
 async def stop():
-    return stop_services()
+    global shutdown_event
+    result = stop_services()
+    # Reset shutdown event for next run
+    shutdown_event = threading.Event()
+    return result
 
 
 @app.get("/status")
@@ -319,6 +354,10 @@ async def status():
 
 @app.get("/video")
 async def get_video(filepath: str):
+    # Resolve to absolute path (handles relative paths from backend working dir)
+    if not os.path.isabs(filepath):
+        filepath = os.path.abspath(os.path.join(os.path.dirname(__file__), filepath))
+
     # Verify the file exists
     if not os.path.isfile(filepath):
         raise HTTPException(
@@ -340,34 +379,34 @@ os.makedirs(SAMPLE_VIDEOS_DIR, exist_ok=True)
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
     """Upload a sample video file for demo purposes.
-    
+
     The video will be saved to ./sample_videos/ directory.
     Returns the path to use in the configuration.
     """
     # Validate file type
-    if not file.filename.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
+    if not file.filename.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
         raise HTTPException(
             status_code=400,
-            detail="Invalid file type. Supported formats: mp4, avi, mov, mkv, webm"
+            detail="Invalid file type. Supported formats: mp4, avi, mov, mkv, webm",
         )
-    
+
     # Save the file - normalize filename to remove special characters
     safe_filename = file.filename.replace(" ", "_").replace("#", "").replace("\\", "")
     file_path = os.path.join(SAMPLE_VIDEOS_DIR, safe_filename)
     # Normalize path to use forward slashes
     file_path_normalized = file_path.replace("\\", "/")
-    
+
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
+
         logger.info(f"Uploaded video file: {file_path_normalized}")
-        
+
         return {
             "status": "success",
             "filename": safe_filename,
             "path": file_path_normalized,
-            "message": f"Video uploaded successfully. Use '{file_path_normalized}' as the video source."
+            "message": f"Video uploaded successfully. Use '{file_path_normalized}' as the video source.",
         }
     except Exception as e:
         logger.error(f"Failed to upload video: {e}")
@@ -381,13 +420,17 @@ async def list_videos():
         videos = []
         if os.path.exists(SAMPLE_VIDEOS_DIR):
             for filename in os.listdir(SAMPLE_VIDEOS_DIR):
-                if filename.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
+                if filename.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
                     filepath = os.path.join(SAMPLE_VIDEOS_DIR, filename)
-                    videos.append({
-                        "filename": filename,
-                        "path": filepath,
-                        "size_mb": round(os.path.getsize(filepath) / (1024 * 1024), 2)
-                    })
+                    videos.append(
+                        {
+                            "filename": filename,
+                            "path": filepath,
+                            "size_mb": round(
+                                os.path.getsize(filepath) / (1024 * 1024), 2
+                            ),
+                        }
+                    )
         return {"videos": videos}
     except Exception as e:
         logger.error(f"Failed to list videos: {e}")
@@ -398,13 +441,13 @@ async def list_videos():
 async def get_events(limit: int = 100):
     """Fetch detected events from the database."""
     global db_writer
-    
+
     try:
         # If db_writer is not initialized, try to initialize it
         if db_writer is None:
             db_url = os.getenv("DATABASE_URL", "sqlite:///./cctv_events.db")
             db_writer = DBWriter(db_url=db_url, create_tables=True)
-        
+
         # Fetch events from database
         events = db_writer.get_events(limit=limit)
         return {"events": events}

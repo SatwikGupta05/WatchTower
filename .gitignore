@@ -177,3 +177,12 @@ cython_debug/
 
 .DS_Store
 localdata/
+
+# Project-specific: generated data & binaries
+backend/video_chunks/
+backend/sample_videos/*.mp4
+backend/sample_videos/*.avi
+backend/sample_videos/*.mov
+backend/*.db
+streamer/go2rtc
+streamer/go2rtc.exe

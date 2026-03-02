@@ -4,7 +4,7 @@ import logging
 import os
 import queue
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 import cv2
@@ -36,7 +36,7 @@ class VideoEventDetector:
     """A class for detecting events in videos using LLM vision capabilities.
 
     This class handles extracting frames from videos, converting them to base64 format,
-    and sending them to various LLM providers (Llama, OpenAI, Gemini, Grok) for event detection.
+    and sending them to various LLM providers (Llama, OpenAI, Gemini, Grok, Ollama, LM Studio) for event detection.
     """
 
     def __init__(
@@ -52,9 +52,9 @@ class VideoEventDetector:
         Args:
             model: Model name to use for event detection.
             base_url: Base URL for the API (not used for Gemini).
-            api_key: API key for authentication.
+            api_key: API key for authentication (empty for local providers).
             output_queue: Optional queue to send detection results to.
-            provider: LLM provider to use ("llama", "openai", "gemini", "grok").
+            provider: LLM provider to use ("llama", "openai", "gemini", "grok", "ollama", "lmstudio").
 
         Raises:
             ValueError: If model is not provided or API key is not available.
@@ -66,7 +66,9 @@ class VideoEventDetector:
         self.output_queue: Optional[queue.Queue] = output_queue
         self.provider_name: str = provider.lower()
 
-        if not self.api_key:
+        # Local providers (ollama, lmstudio) don't need API keys
+        local_providers = ["ollama", "lmstudio"]
+        if not self.api_key and self.provider_name not in local_providers:
             raise ValueError("API key must be provided")
 
         try:
@@ -201,6 +203,9 @@ class VideoEventDetector:
     def _convert_to_base64(self, frame: np.ndarray) -> Optional[str]:
         """Convert an OpenCV frame to base64 format.
 
+        Resizes the frame to a max dimension of 640px to reduce token usage
+        and prevent memory crashes in local models.
+
         Args:
             frame: OpenCV image frame as numpy array.
 
@@ -208,12 +213,23 @@ class VideoEventDetector:
             Base64 encoded string of the image or None if conversion fails.
         """
         try:
-            success, buffer = cv2.imencode(".png", frame)
+            # Resize frame to max 640px on longest side to reduce memory/tokens
+            MAX_DIM = 640
+            h, w = frame.shape[:2]
+            if max(h, w) > MAX_DIM:
+                scale = MAX_DIM / max(h, w)
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+            # Use JPEG instead of PNG - much smaller payload, fewer tokens
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, 80]
+            success, buffer = cv2.imencode(".jpg", frame, encode_params)
             if success:
                 frame_base64 = base64.b64encode(buffer).decode("utf-8")
-                return f"data:image/png;base64,{frame_base64}"
+                return f"data:image/jpeg;base64,{frame_base64}"
             else:
-                logger.warning("Failed to encode frame to PNG.")
+                logger.warning("Failed to encode frame to JPEG.")
                 return None
         except cv2.error as e:
             logger.error(f"OpenCV error encoding frame: {e}")
@@ -319,7 +335,8 @@ class VideoEventDetector:
             if len(filename_parts) > 1:
                 timestamp_str = filename_parts[1]
                 if len(timestamp_str) == 14:
-                    timestamp = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+                    # Parse as UTC-aware (chunker records filenames in UTC)
+                    timestamp = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
                     return timestamp
                 else:
                     logger.warning(
@@ -406,7 +423,7 @@ class VideoEventDetector:
                 video_filename = os.path.basename(video_path)
                 timestamp = (
                     self._extract_timestamp_from_filename(video_filename)
-                    or datetime.now()
+                    or datetime.now(timezone.utc)
                 )
 
                 event_video_url = video_path

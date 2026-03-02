@@ -50,7 +50,7 @@ class LLMProvider(ABC):
 
 
 class OpenAICompatibleProvider(LLMProvider):
-    """Provider for OpenAI-compatible APIs (Llama, OpenAI, Grok)."""
+    """Provider for OpenAI-compatible APIs (Llama, OpenAI, Grok, Ollama, LM Studio)."""
 
     def __init__(
         self,
@@ -58,6 +58,7 @@ class OpenAICompatibleProvider(LLMProvider):
         base_url: str,
         model: str,
         provider_name: str = "openai-compatible",
+        chat_endpoint: str = "chat/completions",
     ):
         from openai import OpenAI
 
@@ -65,9 +66,14 @@ class OpenAICompatibleProvider(LLMProvider):
         self.base_url = base_url
         self.model = model
         self.provider_name = provider_name
+        self.chat_endpoint = chat_endpoint
 
         if not api_key:
-            raise ValueError(f"API key must be provided for {provider_name}")
+            # Allow empty API key for local providers (Ollama, LM Studio)
+            if provider_name in ("ollama", "lmstudio"):
+                api_key = "dummy"
+            else:
+                raise ValueError(f"API key must be provided for {provider_name}")
 
         try:
             self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -77,6 +83,34 @@ class OpenAICompatibleProvider(LLMProvider):
 
     def get_provider_name(self) -> str:
         return self.provider_name
+
+    def _ensure_lmstudio_model_loaded(self, base_url: str) -> None:
+        """Ensure the model is loaded in LM Studio before inference.
+        
+        LM Studio may fail with 'Operation canceled' if the model is not
+        pre-loaded. This calls /api/v1/models/load and waits for it.
+        """
+        import httpx
+
+        load_url = f"{base_url}/api/v1/models/load"
+        try:
+            logger.info(f"Pre-loading LM Studio model: {self.model}")
+            with httpx.Client(timeout=300) as http_client:
+                resp = http_client.post(load_url, json={
+                    "model": self.model,
+                    "context_length": 16384,  # Set large enough context for image tokens
+                })
+                if resp.status_code in (200, 201):
+                    logger.info(f"LM Studio model '{self.model}' loaded successfully.")
+                elif resp.status_code == 409:
+                    # 409 means model is already loaded - that's fine
+                    logger.info(f"LM Studio model '{self.model}' is already loaded.")
+                else:
+                    logger.warning(
+                        f"LM Studio model load returned status {resp.status_code}: {resp.text}"
+                    )
+        except Exception as e:
+            logger.warning(f"Could not pre-load LM Studio model (will try inference anyway): {e}")
 
     def _create_json_schema(self) -> Dict[str, Any]:
         """Create JSON schema for response validation."""
@@ -101,6 +135,41 @@ class OpenAICompatibleProvider(LLMProvider):
             }
         }
 
+    def _normalize_response(self, parsed: Dict[str, Any], events: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Normalize LLM response to the expected events array format.
+
+        Some models return flat key-value pairs like {"weapon-detected": true}
+        instead of the expected {"events": [{"event_code": ..., "detected": ...}]}.
+        This method converts both formats to the standard format.
+        """
+        # Already in correct format
+        if "events" in parsed and isinstance(parsed["events"], list):
+            return parsed
+
+        # Flat format: {"weapon-detected": true, "fight": false, ...}
+        event_codes = {e["event_code"] for e in events}
+        normalized_events = []
+        for key, value in parsed.items():
+            if isinstance(value, bool):
+                normalized_events.append({
+                    "event_code": key,
+                    "detected": value,
+                    "explanation": f"Detected: {value}",
+                })
+            elif isinstance(value, dict) and "detected" in value:
+                normalized_events.append({
+                    "event_code": key,
+                    "detected": bool(value["detected"]),
+                    "explanation": value.get("explanation", value.get("reason", "")),
+                })
+
+        if normalized_events:
+            logger.info(f"Normalized flat response to events array ({len(normalized_events)} events)")
+            return {"events": normalized_events}
+
+        logger.warning(f"Could not normalize response: {parsed}")
+        return parsed
+
     def analyze_frames(
         self,
         frames: List[str],
@@ -116,37 +185,110 @@ class OpenAICompatibleProvider(LLMProvider):
             for e in events
         )
 
-        # Build messages
-        system_message = {
-            "role": "system",
-            "content": system_prompt.format(context=context),
-        }
-
-        content = [
-            {"type": "text", "text": user_prompt.format(events_list=event_list_str)}
-        ]
-
-        for frame in frames:
-            content.append({"type": "image_url", "image_url": {"url": frame}})
-
-        user_message = {"role": "user", "content": content}
-
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[system_message, user_message],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": self._create_json_schema(),
-                },
-            )
+            # Use custom endpoint if specified (for LM Studio native API)
+            if self.chat_endpoint != "chat/completions":
+                # LM Studio uses different format: "input" array instead of "messages"
+                import httpx
+                base = self.base_url.rstrip('/')
+                full_url = f"{base}/{self.chat_endpoint}"
 
-            results_content = response.choices[0].message.content
-            return json.loads(results_content)
+                # Pre-load the model via LM Studio's load endpoint before inference
+                self._ensure_lmstudio_model_loaded(base)
+
+                # Limit frames for local models - each image = ~1000 tokens
+                # Keep max 2 frames to stay well within context and prevent OOM crashes
+                MAX_FRAMES_LOCAL = 2
+                if len(frames) > MAX_FRAMES_LOCAL:
+                    # Evenly sample MAX_FRAMES_LOCAL frames from all available
+                    step = len(frames) // MAX_FRAMES_LOCAL
+                    frames = [frames[i * step] for i in range(MAX_FRAMES_LOCAL)]
+                    logger.info(f"Reduced to {MAX_FRAMES_LOCAL} frames for local model to fit context window")
+
+                # Build LM Studio format with "input" array
+                # Include system prompt and STRICT JSON format instructions
+                full_user_prompt = (
+                    f"{system_prompt.format(context=context)}\n\n"
+                    f"{user_prompt.format(events_list=event_list_str)}\n\n"
+                    "IMPORTANT: You MUST respond ONLY with valid JSON in EXACTLY this format, no other text:\n"
+                    '{"events": [{"event_code": "code", "detected": true, "explanation": "reason"}]}'
+                )
+                
+                input_content = [
+                    {"type": "text", "content": full_user_prompt}
+                ]
+
+                # Add frames as images in LM Studio format
+                for frame in frames:
+                    input_content.append({
+                        "type": "image",
+                        "data_url": frame  # LM Studio expects data_url, not nested in image_url
+                    })
+
+                # LM Studio request format - use large context_length to fit image tokens
+                request_body = {
+                    "model": self.model,
+                    "input": input_content,
+                    "context_length": 16384,
+                    "temperature": 0.7,
+                }
+
+                # Use httpx with longer timeout since model loading can take time
+                with httpx.Client(timeout=300) as http_client:
+                    response = http_client.post(full_url, json=request_body)
+                    response.raise_for_status()
+                    result = response.json()
+                    # LM Studio returns output[0].content, not choices[0].message.content
+                    if "output" in result and len(result["output"]) > 0:
+                        results_content = result["output"][0]["content"]
+                    elif "choices" in result:
+                        results_content = result["choices"][0]["message"]["content"]
+                    else:
+                        logger.error(f"Unexpected LM Studio response format: {result}")
+                        return {"error": "Unexpected response format from LM Studio"}
+            else:
+                # Standard OpenAI format for other providers
+                system_message = {
+                    "role": "system",
+                    "content": system_prompt.format(context=context),
+                }
+
+                content = [
+                    {"type": "text", "text": user_prompt.format(events_list=event_list_str)}
+                ]
+
+                for frame in frames:
+                    content.append({"type": "image_url", "image_url": {"url": frame}})
+
+                user_message = {"role": "user", "content": content}
+
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[system_message, user_message],
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": self._create_json_schema(),
+                    },
+                )
+                results_content = response.choices[0].message.content
+
+            parsed = json.loads(results_content)
+            return self._normalize_response(parsed, events)
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode JSON response: {e}")
-            return {"error": "Failed to decode LLM response"}
+            logger.error(f"Failed to decode JSON response from {self.provider_name}: {e}")
+            # Try to extract JSON from wrapped response
+            try:
+                if isinstance(results_content, str):
+                    if "```json" in results_content:
+                        results_content = results_content.split("```json")[1].split("```")[0]
+                    elif "```" in results_content:
+                        results_content = results_content.split("```")[1].split("```")[0]
+                    parsed = json.loads(results_content.strip())
+                    return self._normalize_response(parsed, events)
+            except Exception:
+                pass
+            return {"error": f"Failed to decode LLM response: {e}"}
         except Exception as e:
             logger.error(f"Error calling {self.provider_name} API: {e}")
             return {"error": f"LLM API call failed: {e}"}
@@ -250,7 +392,9 @@ IMPORTANT: Respond ONLY with valid JSON in this exact format:
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode Gemini JSON response: {e}")
-            logger.debug(f"Raw response: {response_text if 'response_text' in dir() else 'N/A'}")
+            logger.debug(
+                f"Raw response: {response_text if 'response_text' in dir() else 'N/A'}"
+            )
             return {"error": "Failed to decode LLM response"}
         except Exception as e:
             logger.error(f"Error calling Gemini API: {e}")
@@ -283,6 +427,21 @@ class LLMProviderFactory:
             "class": GeminiProvider,
             "default_model": "gemini-1.5-flash",
             "env_key": "GEMINI_API_KEY",
+        },
+        "ollama": {
+            "class": OpenAICompatibleProvider,
+            "default_base_url": "http://localhost:11434/v1",
+            "default_model": "llava",
+            "env_key": None,
+            "local": True,
+        },
+        "lmstudio": {
+            "class": OpenAICompatibleProvider,
+            "default_base_url": "http://localhost:1234",
+            "default_model": "qwen3-vl-8b-instruct-abliterated-v2.0",
+            "env_key": None,
+            "local": True,
+            "chat_endpoint": "api/v1/chat",
         },
     }
 
@@ -324,11 +483,13 @@ class LLMProviderFactory:
             return GeminiProvider(api_key=api_key, model=model)
         else:
             base_url = base_url or config["default_base_url"]
+            chat_endpoint = config.get("chat_endpoint", "chat/completions")
             return OpenAICompatibleProvider(
                 api_key=api_key,
                 base_url=base_url,
                 model=model,
                 provider_name=provider_name,
+                chat_endpoint=chat_endpoint,
             )
 
     @classmethod

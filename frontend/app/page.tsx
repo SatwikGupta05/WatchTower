@@ -26,7 +26,7 @@ type EventToDetect = {
   guidelines: string;
 };
 
-type LLMProvider = "llama" | "openai" | "gemini" | "grok";
+type LLMProvider = "llama" | "openai" | "gemini" | "grok" | "ollama" | "lmstudio";
 type VideoSourceType = "webcam" | "rtsp" | "file" | "auto";
 
 type AppState = {
@@ -74,7 +74,7 @@ export default function Home() {
   ];
 
   // Provider configurations with default models
-  const providerConfigs: Record<LLMProvider, { name: string; defaultModel: string; defaultBaseUrl: string }> = {
+  const providerConfigs: Record<LLMProvider, { name: string; defaultModel: string; defaultBaseUrl: string; local?: boolean }> = {
     llama: {
       name: "Meta Llama",
       defaultModel: "Llama-4-Maverick-17B-128E-Instruct-FP8",
@@ -95,12 +95,24 @@ export default function Home() {
       defaultModel: "grok-vision-beta",
       defaultBaseUrl: "https://api.x.ai/v1",
     },
+    ollama: {
+      name: "Ollama (Local)",
+      defaultModel: "llava",
+      defaultBaseUrl: "http://localhost:11434/v1",
+      local: true,
+    },
+    lmstudio: {
+      name: "LM Studio (Local)",
+      defaultModel: "qwen3-vl-8b-instruct-abliterated-v2.0",
+      defaultBaseUrl: "http://localhost:1234",
+      local: true,
+    },
   };
 
   const [state, setState] = useState<AppState>({
     step: 1,
     previewUrl: "",
-    rtspUrl: "./sample_videos/street_fight.mp4",
+    rtspUrl: "./sample_videos/fight.mp4",
     eventsToDetect: dangerEventTemplates.slice(0, 2), // Start with weapon and fight detection
     streamContext:
       "Security camera footage. Monitor for any dangerous activities, suspicious behavior, or safety hazards.",
@@ -425,10 +437,17 @@ export default function Home() {
                       <option value="openai">OpenAI GPT-4</option>
                       <option value="llama">Meta Llama</option>
                       <option value="grok">xAI Grok</option>
+                      <option value="ollama">🖥️ Ollama (Local)</option>
+                      <option value="lmstudio">🖥️ LM Studio (Local)</option>
                     </select>
-                    {state.provider === "gemini" && (
+                {state.provider === "gemini" && (
                       <p className="text-green-400 text-xs mt-2">
                         ✓ Free tier: 15 requests/min, perfect for demos!
+                      </p>
+                    )}
+                    {(state.provider === "ollama" || state.provider === "lmstudio") && (
+                      <p className="text-blue-400 text-xs mt-2">
+                        ✓ Local provider. Make sure Ollama/LM Studio is running with a vision model loaded.
                       </p>
                     )}
                   </div>
@@ -473,7 +492,15 @@ export default function Home() {
 
                 <div className="p-4 bg-amber-900/30 border border-amber-800 rounded-lg">
                   <p className="text-amber-200 text-sm">
-                    <strong>Note:</strong> Make sure to set the <code className="bg-gray-800 px-1 rounded">{state.provider.toUpperCase()}_API_KEY</code> environment variable on your backend server.
+                    {state.provider === "ollama" || state.provider === "lmstudio" ? (
+                      <>
+                        <strong>Note:</strong> Local provider selected. Ensure your local LLM server is running and you have a vision-capable model loaded (e.g., llava, llama-3.2-vision).
+                      </>
+                    ) : (
+                      <>
+                        <strong>Note:</strong> Make sure to set the <code className="bg-gray-800 px-1 rounded">{state.provider.toUpperCase()}_API_KEY</code> environment variable on your backend server.
+                      </>
+                    )}
                   </p>
                 </div>
 
@@ -627,13 +654,13 @@ export default function Home() {
                             if (response.ok) {
                               const data = await response.json();
                               setState({ ...state, rtspUrl: data.path });
-                              alert(`Video uploaded! Path: ${data.path}`);
+                              showToast(`Video uploaded! Path: ${data.path}`, "success");
                             } else {
                               const error = await response.json();
-                              alert(`Upload failed: ${error.detail}`);
+                              showToast(`Upload failed: ${error.detail}`, "error");
                             }
                           } catch (error) {
-                            alert(`Upload error: ${error}`);
+                            showToast(`Upload error: ${error}`, "error");
                           }
                         }}
                         className="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-indigo-800 file:text-white hover:file:bg-indigo-700 file:cursor-pointer"
@@ -1387,38 +1414,6 @@ export default function Home() {
               </div>
             </div>
 
-            {isModalOpen && modalVideoUrl && (
-              <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-                <div className="relative bg-gray-900 rounded-lg shadow-xl w-full max-w-4xl aspect-video">
-                  <button
-                    onClick={closeModal}
-                    className="absolute -top-2 -right-2 z-10 bg-red-600 hover:bg-red-700 text-white rounded-full p-1.5 transition-colors"
-                    aria-label="Close video modal"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-
-                  <video
-                    key={modalVideoUrl}
-                    className="w-full h-full rounded-lg"
-                    src={modalVideoUrl}
-                    controls
-                    autoPlay
-                    onError={(e) => {
-                      console.error("Video player error:", e);
-                      showToast("Error loading video.", "error");
-                      closeModal();
-                    }}
-                  >
-                    Your browser does not support the video tag.
-                  </video>
-                </div>
-                <div
-                  className="absolute inset-0 -z-10"
-                  onClick={closeModal}
-                ></div>
-              </div>
-            )}
           </>
         );
 

@@ -18,7 +18,7 @@ import cv2
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_FOURCC = cv2.VideoWriter_fourcc(*"avc1")
+DEFAULT_FOURCC = cv2.VideoWriter_fourcc(*"mp4v")
 
 
 class VideoStreamChunker:
